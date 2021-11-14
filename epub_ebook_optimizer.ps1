@@ -13,6 +13,10 @@
 # to create a smaller resulting epub file as an end result.
 # Does not work on epub files containing .gif, .svg and .png files.
 #
+# Usage:
+# .\epub_ebook_optimizer.ps1 <path\myebookfile.epub>  # single argument is the same as providing arg -epub <path\myebookfile.epub>
+# .\epub_ebook_optimizer.ps1 -epub <path\myebookfile.epub> [-limit <size as bytes>] [-compression <0..100 as procent>]
+#
 
 
 #region Assemblies needed
@@ -100,20 +104,22 @@ Function Verify-EpubSignature
 
     [Bool]$IsCompressedEpub = $false
 
-    # check if the file is ZIP compressed (and possibly has epub file content)
-    # Get the first 2 bytes of the epub file
-    $epubFileHandle = [System.IO.File]::OpenRead($EpubFile)
-    $epubFileReader = New-Object System.IO.BinaryReader($epubFileHandle, [System.Text.Encoding]::ASCII)
-    [string]$epubCode = $([System.Text.Encoding]::ASCII.GetString($epubFileReader.ReadBytes(2)))
-    $epubFileReader.Close()
-    $epubFileReader.Dispose()
-    $epubFileReader = $null
-    $epubFileHandle.Close()
-    $epubFileHandle.Dispose()
-    $epubFileHandle = $null
+    If ((Test-Path -Path $EpubFileInfo.FullName) -and ([System.IO.Path]::GetExtension($EpubFileInfo.FullName) -eq ".epub")) {
+        # check if the file is ZIP compressed (and possibly has epub file content)
+        # Get the first 2 bytes of the epub file
+        $epubFileHandle = [System.IO.File]::OpenRead($EpubFile)
+        $epubFileReader = New-Object System.IO.BinaryReader($epubFileHandle, [System.Text.Encoding]::ASCII)
+        [string]$epubCode = $([System.Text.Encoding]::ASCII.GetString($epubFileReader.ReadBytes(2)))
+        $epubFileReader.Close()
+        $epubFileReader.Dispose()
+        $epubFileReader = $null
+        $epubFileHandle.Close()
+        $epubFileHandle.Dispose()
+        $epubFileHandle = $null
 
-    If ($epubCode.Equals("PK")) {
-        $IsCompressedEpub = $true
+        If ($epubCode.Equals("PK")) {
+            $IsCompressedEpub = $true
+        }
     }
 
     Return $IsCompressedEpub
@@ -262,6 +268,7 @@ Function Get-EpubMetaDetails
     [PSObject]$epubMetaHeader = New-Object PSObject
     Add-Member -InputObject $epubMetaHeader -MemberType NoteProperty -Name FileName -Value ([string]::Empty)
     Add-Member -InputObject $epubMetaHeader -MemberType NoteProperty -Name Title -Value ([string]::Empty)
+    Add-Member -InputObject $epubMetaHeader -MemberType NoteProperty -Name SubTitle -Value ([string]::Empty)
     Add-Member -InputObject $epubMetaHeader -MemberType NoteProperty -Name Author -Value ([string]::Empty)
     Add-Member -InputObject $epubMetaHeader -MemberType NoteProperty -Name ISBN -Value ([string]::Empty)
     Add-Member -InputObject $epubMetaHeader -MemberType NoteProperty -Name Publisher -Value ([string]::Empty)
@@ -310,7 +317,13 @@ Function Get-EpubMetaDetails
                     [System.Array]$epubDateData = @($opfXmlData.package.metadata.date)
 
                     # extract the data from array. Fields we want are always on the end of the array.
-                    [System.Object]$title = $epubTitleData[$epubTitleData.Length -1]
+                    [System.Object]$title = [string]::Empty
+                    [System.Object]$subtitle = [string]::Empty
+                    Switch($epubTitleData.Length) {
+                        1 { $title = $epubTitleData[$epubTitleData.Length -1] }
+                        2 { $title = $epubTitleData[$epubTitleData.Length -2]; $subtitle = $epubTitleData[$epubTitleData.Length -1] }  
+                    }
+
                     [System.Object]$creator = $epubCreatorData[$epubCreatorData.Length -1]
                     [System.Object]$isbn = $epubISBNData[$epubISBNData.Length -1]
                     [System.Object]$publisher = $epubPublisherData[$epubPublisherData.Length -1]
@@ -319,6 +332,10 @@ Function Get-EpubMetaDetails
                     # override if the type is NOT string
                     If ($title -Is [System.Xml.XmlElement]) {
                         $title = ($title).InnerText
+                    }
+
+                    If ($subtitle -Is [System.Xml.XmlElement]) {
+                        $subtitle = ($subtitle).InnerText
                     }
 
                     If ($creator -Is [System.Xml.XmlElement]) {
@@ -349,6 +366,7 @@ Function Get-EpubMetaDetails
 
                     # now, format the epub meta data for output to stdout and store it in a object
                     $epubMetaHeader.Title = $title
+                    $epubMetaHeader.SubTitle = $subtitle
                     $epubMetaHeader.Author = $creator
                     $epubMetaHeader.ISBN = $isbn
                     $epubMetaHeader.Publisher = $publisher
@@ -399,18 +417,25 @@ Function Main
     [UInt32]$TargetSizeLimit  = $Global:DefaultSizeLimit   # default to 100Mb
     [Int32]$TargetCompression = $Global:DefaultCompression # default JPG compression level   
 
+    $TargetFile = "E:\epub\Mastering_VMware_Horizon8.epub"
 
     # process script cli arguments
     If ($Arguments) {
-        For($i = 0; $i -lt $Arguments.Length; $i++) {
-            #Write-Host "DEBUG : Arg #$($i.ToString()) is $($Arguments[$i])"
+        If ($Arguments.Length -eq 1) {
+            # single argument. Accept is as parameter "-epub <file>".
+            $TargetFile = $Arguments[0]
+        } Else {
+            # more then one argument. Parse them as arguments list.
+            For($i = 0; $i -lt $Arguments.Length; $i++) {
+                #Write-Host "DEBUG : Arg #$($i.ToString()) is $($Arguments[$i])"
 
-            # default, a PWSH Switch statement on a String is always case insensitive
-            Switch ($Arguments[$i]) {
-                "-epub" { $TargetFile = $Arguments[$i +1] }
-                "-limit" { [UInt32]::TryParse($Arguments[$i +1], [ref]$TargetSizeLimit) }
-                "-compression" { [Int32]::TryParse($Arguments[$i +1], [ref]$TargetCompression) }
-                default {}
+                # default, a PWSH Switch statement on a String is always case insensitive
+                Switch ($Arguments[$i].ToLowerInvariant()) {
+                    "-epub" { If (($i +1) -le $Arguments.Length) { $TargetFile = $Arguments[$i +1] } }                                      # -epub <path_and_file_name>
+                    "-limit" { If (($i +1) -le $Arguments.Length) { [UInt32]::TryParse($Arguments[$i +1], [ref]$TargetSizeLimit) } }        # -limit <size_in_bytes>
+                    "-compression" { If (($i +1) -le $Arguments.Length) { [Int32]::TryParse($Arguments[$i +1], [ref]$TargetCompression) } } # -compression <ratio_as_procent>
+                    default {}
+                }
             }
         }
     }
@@ -439,18 +464,19 @@ Function Main
                     Write-Host "-- Meta info --"
                     Write-Host "epub File      : $($epubMETA.FileName)"
                     Write-Host "book Title     : $($epubMETA.Title)"
+                    Write-Host "book Sub-Title : $($epubMETA.SubTitle)"
                     Write-Host "book Author    : $($epubMETA.Author)"
                     Write-Host "book ISBN      : $($epubMETA.ISBN)"
                     Write-Host "Publisher      : $($epubMETA.Publisher)"
                     Write-Host "Publisher Date : $($epubMETA.PublisherDate)"
                     Write-Host ""
 
-                    # optimize the epub images
-                    Optimize-EpubBody -EpubFileInfo $epubOSInfo -EpubImageTypes "jpg"
-                    Optimize-EpubBody -EpubFileInfo $epubOSInfo -EpubImageTypes "jpeg"
+                    # optimize the epub images we support (*.jpg and *.jpeg)
+                    #Optimize-EpubBody -EpubFileInfo $epubOSInfo -EpubImageTypes "jpg"
+                    #Optimize-EpubBody -EpubFileInfo $epubOSInfo -EpubImageTypes "jpeg"
 
                     # repackage
-                    Pack-FilesToEpub -EpubFileInfo $epubOSInfo
+                    #Pack-FilesToEpub -EpubFileInfo $epubOSInfo
 
                     # free
                     $epubOSInfo = $null
@@ -467,8 +493,9 @@ Function Main
         }
     } Else {
         Write-Warning "[!] Provide a target epub file using parameter -epub <file>, and optionally -limit or -compression!"
-        Write-Host ""        
-        Write-Host "Usage : .\$(Split-Path -Path $MyInvocation.ScriptName -Leaf) -epub <myebookfile.epub> [-limit <size as bytes>] [-compression <0..100 as procent>]"
+        Write-Host ""
+        Write-Host "Usage : .\$(Split-Path -Path $MyInvocation.ScriptName -Leaf) <path\ebookfile.epub>"
+        Write-Host "Usage : .\$(Split-Path -Path $MyInvocation.ScriptName -Leaf) -epub <path\ebookfile.epub> [-limit <size as bytes>] [-compression <0..100 as procent>]"
         Write-Host "[i] Default -limit size is $($Global:DefaultSizeLimit) bytes."
         Write-Host "[i] Default -compression ratio value is $($Global:DefaultCompression)%."
         Write-Host ""

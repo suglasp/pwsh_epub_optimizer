@@ -4,4 +4,5 @@ PowerShell epub EBook optimizer
 Script that can read a epub file and try to compress the images a bit more, so the total epub file gets smaller.
 
 Usage:
+.\epub_ebook_optimizer.ps1 <path\myebookfile.epub>  # single argument is the same as providing arg -epub <path\myebookfile.epub>
 .\epub_ebook_optimizer.ps1 -epub <path\myebookfile.epub> [-limit <size as bytes>] [-compression <0..100 as procent>]
