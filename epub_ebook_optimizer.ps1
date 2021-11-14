@@ -166,25 +166,33 @@ Function Pack-FilesToEpub
 
     If (-not ($EpubFileInfo -eq $null)) {
         # rename original epub file
-        If (Test-Path -Path $EpubFileInfo.FullName) {
-            Rename-Item -Path $EpubFileInfo.FullName -NewName "$($EpubFileInfo.Directory)\$($EpubFileInfo.BaseName).bck" -Force -Confirm:$false
-            Write-Host "[i] Renamed old epub file to $($EpubFileInfo.BaseName).bck."
-        }
+        #If (Test-Path -Path $EpubFileInfo.FullName) {
+        #    Rename-Item -Path $EpubFileInfo.FullName -NewName "$($EpubFileInfo.Directory)\$($EpubFileInfo.BaseName).bck" -Force -Confirm:$false
+        #    Write-Host "[i] Renamed old epub file to $($EpubFileInfo.BaseName).bck."
+        #}
+
+        [string]$Extension = ([System.IO.Path]::GetExtension($EpubFileInfo.FullName))
 
         # build extract folder path
         [string]$extractFolder = "$($EpubFileInfo.Directory)\$($EpubFileInfo.BaseName)"
+        [string]$epubOptimizedFileName = $EpubFileInfo.FullName.Replace($Extension, "_optimized$($Extension)")
+        
+        # delete old optimized epub file
+        If (Test-Path -Path $epubOptimizedFileName) {
+            Remove-Item $epubOptimizedFileName -Force -Confirm:$false
+        }
 
-        # pack the content to a .epub file
-        [System.IO.Compression.ZipFile]::CreateFromDirectory($extractFolder, $EpubFileInfo.FullName)
+        # pack the content to a new .epub file
+        [System.IO.Compression.ZipFile]::CreateFromDirectory($extractFolder, $epubOptimizedFileName)
 
-        # delete old content
-        # remove extracted files
+        # delete temporary content folder(s)
+        # remove extracted epub files
         Get-ChildItem -Path $extractFolder -Recurse | Remove-Item -Force -Recurse -Confirm:$false
         
-        # remove extract folder
+        # remove extract epub folder
         Remove-Item $extractFolder -Force -Confirm:$false
 
-        Write-Host "[i] Created optimized epub $($EpubFileInfo.BaseName).epub."
+        Write-Host "[i] Created optimized epub $($epubOptimizedFileName)."
     }
 }
 
@@ -201,8 +209,6 @@ Function Optimize-EpubBody
         [Int32]$ImageCompressionLevel = 50L
     )
 
-    #Write-Host "Optimizing epub files..."
-
     If (-not ($EpubFileInfo -eq $null)) {
         # build extract folder
         [string]$extractFolder = "$($EpubFileInfo.Directory)\$($EpubFileInfo.BaseName)"
@@ -213,10 +219,12 @@ Function Optimize-EpubBody
 
             # got image file(s)?
             If ($imgFiles.Length -gt 0) {
-                Write-Host "Optimizing epub files..."
+                Write-Host "Optimizing $($EpubImageTypes) type images in epub file..."
                 ForEach($imgFile In $imgFiles) {
                     Optimize-JPEGImageFile -JPEGImageFilePath $imgFile -CompressionLevel $ImageCompressionLevel
                 }
+            } Else {
+                Write-Warning "[i] Nothing to optimize for $($EpubImageTypes) image type format."
             }
         }
     }
@@ -379,6 +387,13 @@ Function Main
         [string[]]$Arguments
     )
 
+    # print script title
+    Write-Host ""
+    Write-Host "----------------------------"
+    Write-Host " epub ebook optimizer tool"
+    Write-Host "----------------------------"
+    Write-Host ""
+
     # private parameters
     [string]$TargetFile       = [string]::Empty            # default no file
     [UInt32]$TargetSizeLimit  = $Global:DefaultSizeLimit   # default to 100Mb
@@ -406,6 +421,7 @@ Function Main
         Write-Host "Target File Name : $($TargetFile)"
         Write-Host "Target Limit Size : $($TargetSizeLimit.ToString()) bytes"
         Write-Host "Target Compression : $($TargetCompression.ToString())%"
+        Write-Host ""
 
         If (Test-Path -Path $TargetFile) {
             # check if we have a epub file and size
@@ -418,6 +434,16 @@ Function Main
 
                     # fetch epub META data details
                     $epubMETA = Get-EpubMetaDetails -EpubFileInfo $epubOSInfo
+
+                    Write-Host ""
+                    Write-Host "-- Meta info --"
+                    Write-Host "epub File      : $($epubMETA.FileName)"
+                    Write-Host "book Title     : $($epubMETA.Title)"
+                    Write-Host "book Author    : $($epubMETA.Author)"
+                    Write-Host "book ISBN      : $($epubMETA.ISBN)"
+                    Write-Host "Publisher      : $($epubMETA.Publisher)"
+                    Write-Host "Publisher Date : $($epubMETA.PublisherDate)"
+                    Write-Host ""
 
                     # optimize the epub images
                     Optimize-EpubBody -EpubFileInfo $epubOSInfo -EpubImageTypes "jpg"
