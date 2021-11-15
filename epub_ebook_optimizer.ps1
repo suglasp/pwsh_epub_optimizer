@@ -5,7 +5,7 @@
 # https://github.com/suglasp/pwsh_epub_optimizer.git
 #
 # Created : 14/11/2021
-# Updated : 14/11/2021
+# Updated : 15/11/2021
 #
 # Google Books only supports epub files up to 100Mb in size.
 # This created the need for me to optimize epub books.
@@ -18,17 +18,20 @@
 # .\epub_ebook_optimizer.ps1 -epub <path\myebookfile.epub> [-limit <size as bytes>] [-compression <0..100 as procent>]
 #
 
+#Requires -Version 5.1
 
 #region Assemblies needed
 Add-Type -AssemblyName System.Drawing
+Add-Type -AssemblyName System.Text.Encoding
+Add-Type -AssemblyName System.IO.Compression
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 Add-Type -AssemblyName System.XML
 #endregion
 
 
 #region Global vars
-[UInt32]$Global:DefaultSizeLimit   = (100*1024*1024)  # Default epub files larger then 100Mb (converted to bytes)
-[UInt32]$Global:DefaultCompression = 50L              # Default 50% JPG compression
+[UInt32]$Global:DefaultSizeLimit = (100*1024*1024)  # Default epub files larger then 100Mb (converted to bytes)
+[Long]$Global:DefaultCompression = 50                 # Default 50% JPG compression
 #endregion
 
 
@@ -64,7 +67,7 @@ Function Optimize-JPEGImageFile
 {  
     Param(
         [string]$JPEGImageFilePath,
-        [Int32]$CompressionLevel = 50L
+        [Long]$CompressionLevel = 50
     )
 
     # load in file and save to new out file
@@ -84,9 +87,12 @@ Function Optimize-JPEGImageFile
             $bmp = $null
         }
 
-        # swap out old image with new one
+        # swap out old image with new one on disk
         Remove-Item -Path $JPEGImageFilePath -Force -ErrorAction SilentlyContinue  # delete original
         Move-Item -Path $newJPEGImageFilePath -Destination $JPEGImageFilePath -ErrorAction SilentlyContinue # rename old one with new one
+
+        # inject into original epub archive file
+
     }
 }
 #endregion
@@ -128,7 +134,7 @@ Function Verify-EpubSignature
 
 #
 # Function : Unpack-EpubToFiles
-# Unpack a single epub file into the original internal files
+# Unpack/unzip a single epub archive file into it's original data files
 #
 Function Unpack-EpubToFiles
 {
@@ -159,8 +165,34 @@ Function Unpack-EpubToFiles
 
 
 #
-# Function : Unpack-FilesToEpub
-# Pack a group of files into a epub file
+# Function : Cleanup-UnpackedEpubFiles
+# Cleanup the extracted/unzipped epub archive files
+#
+Function Cleanup-UnpackedEpubFiles
+{
+    Param(
+        [System.IO.FileInfo]$EpubFileInfo
+    )
+
+    If (-not ($EpubFileInfo -eq $null)) {
+        [string]$extractFolder = "$($EpubFileInfo.Directory)\$($EpubFileInfo.BaseName)"
+
+        # remove extracted epub files
+        Get-ChildItem -Path $extractFolder -Recurse | Remove-Item -Force -Recurse -Confirm:$false
+        
+        # remove extract epub folder
+        Remove-Item $extractFolder -Force -Confirm:$false
+    }
+}
+
+
+#
+# Function : Pack-FilesToEpub (DEPRICATED)
+# Pack/zip a group of files into a new epub archive file
+# DEPRICATED => .NET zip files are packes as Deflate.
+# Seems like most epub archive files are some other type of compression and not all epub readers can handle the Deflate
+# archive. Seems like Google Android Google Books app can't read or import them anyway.
+# So my solution : clone the original epub file and re-inject the replacement files.
 #
 Function Pack-FilesToEpub
 {
@@ -192,11 +224,7 @@ Function Pack-FilesToEpub
         [System.IO.Compression.ZipFile]::CreateFromDirectory($extractFolder, $epubOptimizedFileName)
 
         # delete temporary content folder(s)
-        # remove extracted epub files
-        Get-ChildItem -Path $extractFolder -Recurse | Remove-Item -Force -Recurse -Confirm:$false
-        
-        # remove extract epub folder
-        Remove-Item $extractFolder -Force -Confirm:$false
+        Cleanup-UnpackedEpubFiles
 
         Write-Host "[i] Created optimized epub $($epubOptimizedFileName)."
     }
@@ -204,42 +232,143 @@ Function Pack-FilesToEpub
 
 
 #
-# Function : Unpack-FilesToEpub
-# Pack a group of files into a epub file
+# Function : Replace-FileInEpubFile
+# Replace a file inside a epub archive file
+#
+# Notice : Every time you call this Method, the epub file (or zip file let's say) is opened and written to.
+# Ideal, you would open once the file, edit it all the way until it's done and then close it.
+# Because we work here with a scripting language and can any time be interrupted by the user,
+# we do it the rought and chose the safer, I/O intensive, way to go.
+#
+Function Replace-FileInEpubFile
+{
+    Param(
+        [System.IO.FileInfo]$EpubFileInfo,
+        [string]$ReplacementFile
+    )
+
+    If ( (-not ($EpubFileInfo -eq $null)) -and (-not ([string]::IsNullOrEmpty($ReplacementFile))) ) {
+        # Open epub archive and find the particular content file (assumes only one is inside the epub file archive)
+        $epubArchive =  [System.IO.Compression.ZipFile]::Open($EpubFileInfo.FullName, [System.IO.Compression.ZipArchiveMode]::Update)
+        #$epubArchive =  [System.IO.Compression.ZipFile]::Open($EpubFileInfo.FullName, [System.IO.Compression.ZipArchiveMode]::Update, [System.Text.Encoding]::Default)
+        $epubContentFiles = $epubArchive.Entries.Where({$_.name -eq $(Split-Path -Path $ReplacementFile -Leaf)})
+
+        # Update the epub archive contents
+        [System.IO.StreamReader]$OptimizedImgFileStream = [System.IO.StreamReader]($ReplacementFile)
+        $desiredFile = [System.IO.StreamWriter]($epubContentFiles).Open()
+        $desiredFile.BaseStream.SetLength(0)
+        $desiredFile.BaseStream.Position = 0
+        $OptimizedImgFileStream.BaseStream.CopyTo($desiredFile.BaseStream)
+        $desiredFile.Flush()
+        $desiredFile.Close()
+        $OptimizedImgFileStream.Close()
+
+        # Write the changes and close the epub archive file
+        $epubArchive.Dispose()
+    }
+}
+
+
+#
+# Function : Clone-EpubToEpubCopy
+# Clone (copy) a epub archive file
+#
+Function Clone-EpubToEpubCopy
+{
+    Param(
+        [System.IO.FileInfo]$EpubFileInfo
+    )
+
+    Write-Host "Cloning epub file..."
+
+    $epubCloneOSInfo = $null
+
+    If (-not ($EpubFileInfo -eq $null)) {
+        # get original file extension
+        [string]$Extension = ([System.IO.Path]::GetExtension($EpubFileInfo.FullName))
+                
+        # build new filename
+        [string]$epubOptimizedFileName = $EpubFileInfo.FullName.Replace($Extension, "_optimized$($Extension)")
+        
+        # delete old optimized epub file
+        If (Test-Path -Path $epubOptimizedFileName) {
+            Remove-Item $epubOptimizedFileName -Force -Confirm:$false
+        }
+
+        # copy the original to the new file
+        Copy-Item -Path $EpubFileInfo.FullName -Destination $epubOptimizedFileName -Force -Confirm:$false
+
+        # return file OS info
+        $epubCloneOSInfo = Get-EpubRawDetails -EpubFile $epubOptimizedFileName
+
+        Write-Host "[i] Created epub clone file $($epubOptimizedFileName)."
+    } Else {
+        Write-Warning "[!] Cloning epub file failed!"
+        Exit(-1)
+    }
+
+    Return $epubCloneOSInfo
+}
+
+
+#
+# Function : Optimize-EpubBody
+# Optimize the unpacked data files of a epub archive file
 #
 Function Optimize-EpubBody
 {
     Param(
-        [System.IO.FileInfo]$EpubFileInfo,
+        [System.IO.FileInfo]$EpubOriginalFileInfo,
+        [System.IO.FileInfo]$EpubOptimizedFileInfo,
         [string]$EpubImageTypes = "jpg",
         [Int32]$ImageCompressionLevel = 50L
     )
 
-    If (-not ($EpubFileInfo -eq $null)) {
-        # build extract folder
-        [string]$extractFolder = "$($EpubFileInfo.Directory)\$($EpubFileInfo.BaseName)"
+    If (-not ($EpubOriginalFileInfo -eq $null)) {
+        # Build extract folder
+        [string]$extractFolder = "$($EpubOriginalFileInfo.Directory)\$($EpubOriginalFileInfo.BaseName)"
 
         If (Test-Path -Path $extractFolder) {
-            # find the package.opf META file
+            # Find the package.opf META file
             [string[]]$imgFiles = @(Get-ChildItem -Path $extractFolder -Include "*.$($EpubImageTypes)" -Recurse)
 
-            # got image file(s)?
+            # Got image file(s)?
             If ($imgFiles.Length -gt 0) {
                 Write-Host "Optimizing $($EpubImageTypes) type images in epub file..."
+                Write-Host "Range : $($imgFiles.Length) files for optimization"
+
                 ForEach($imgFile In $imgFiles) {
+                    # calculate image signature
+                    [string]$beforeSignature = (Get-FileHash -Path $imgFile -Algorithm SHA1).Hash
+
+                    # Compress Image
                     Optimize-JPEGImageFile -JPEGImageFilePath $imgFile -CompressionLevel $ImageCompressionLevel
+
+                    # calculate optimize image signature
+                    [string]$afterSignature = (Get-FileHash -Path $imgFile -Algorithm SHA1).Hash
+
+                    # if the file was changes, replace it
+                    If (-not ($beforeSignature -eq $afterSignature)) {
+                        Write-Host "  Optimizing -> $(Split-Path -Path $imgFile -Leaf)"
+                        # Repackage directly into the cloned epub archive file
+                        Replace-FileInEpubFile -EpubFileInfo $EpubOptimizedFileInfo -ReplacementFile $imgFile
+                    } Else {
+                        Write-Host "  Unchanged -> $(Split-Path -Path $imgFile -Leaf)"
+                    }
                 }
             } Else {
                 Write-Warning "[i] Nothing to optimize for $($EpubImageTypes) image type format."
             }
         }
+    } Else {
+        Write-Warning "[!] Optimization failed!"
     }
 }
 
 
 #
 # Function : Get-EpubRawDetails
-# Get OS epub file details
+# Get OS epub archive file details
 #
 Function Get-EpubRawDetails
 {
@@ -282,11 +411,11 @@ Function Get-EpubMetaDetails
         [string]$extractFolder = "$($EpubFileInfo.Directory)\$($EpubFileInfo.BaseName)"
 
         If (Test-Path -Path $extractFolder) {
-            # find the package.opf META file
+            # find the package.opf META file (from disk, not live in the epub archive)
             [string[]]$opfFiles = @(Get-ChildItem -Path $extractFolder -Include "*.opf" -Recurse)
 
             # got META file(s)?
-            If ($opfFiles.Length -gt 0) {            
+            If ($opfFiles.Length -gt 0) {
                 try {
                     # try xml reading the FIRST opf file
                     [System.IO.StreamReader]$opfRawDataStream = New-Object System.IO.StreamReader($opfFiles[0]) # read first META file. Mostly, there is only one.
@@ -415,9 +544,7 @@ Function Main
     # private parameters
     [string]$TargetFile       = [string]::Empty            # default no file
     [UInt32]$TargetSizeLimit  = $Global:DefaultSizeLimit   # default to 100Mb
-    [Int32]$TargetCompression = $Global:DefaultCompression # default JPG compression level   
-
-    $TargetFile = "E:\epub\Mastering_VMware_Horizon8.epub"
+    [Long]$TargetCompression  = $Global:DefaultCompression # default JPG compression level   
 
     # process script cli arguments
     If ($Arguments) {
@@ -433,7 +560,7 @@ Function Main
                 Switch ($Arguments[$i].ToLowerInvariant()) {
                     "-epub" { If (($i +1) -le $Arguments.Length) { $TargetFile = $Arguments[$i +1] } }                                      # -epub <path_and_file_name>
                     "-limit" { If (($i +1) -le $Arguments.Length) { [UInt32]::TryParse($Arguments[$i +1], [ref]$TargetSizeLimit) } }        # -limit <size_in_bytes>
-                    "-compression" { If (($i +1) -le $Arguments.Length) { [Int32]::TryParse($Arguments[$i +1], [ref]$TargetCompression) } } # -compression <ratio_as_procent>
+                    "-compression" { If (($i +1) -le $Arguments.Length) { [Long]::TryParse($Arguments[$i +1], [ref]$TargetCompression) } }  # -compression <ratio>
                     default {}
                 }
             }
@@ -460,28 +587,51 @@ Function Main
                     # fetch epub META data details
                     $epubMETA = Get-EpubMetaDetails -EpubFileInfo $epubOSInfo
 
-                    Write-Host ""
-                    Write-Host "-- Meta info --"
-                    Write-Host "epub File      : $($epubMETA.FileName)"
-                    Write-Host "book Title     : $($epubMETA.Title)"
-                    Write-Host "book Sub-Title : $($epubMETA.SubTitle)"
-                    Write-Host "book Author    : $($epubMETA.Author)"
-                    Write-Host "book ISBN      : $($epubMETA.ISBN)"
-                    Write-Host "Publisher      : $($epubMETA.Publisher)"
-                    Write-Host "Publisher Date : $($epubMETA.PublisherDate)"
-                    Write-Host ""
+                    If ($epubMETA -ne $null) {
+                        Write-Host ""
+                        Write-Host "-- Meta info --"
+                        Write-Host "epub File      : $($epubMETA.FileName)"
+                        Write-Host "book Title     : $($epubMETA.Title)"
+                        Write-Host "book Sub-Title : $($epubMETA.SubTitle)"
+                        Write-Host "book Author    : $($epubMETA.Author)"
+                        Write-Host "book ISBN      : $($epubMETA.ISBN)"
+                        Write-Host "Publisher      : $($epubMETA.Publisher)"
+                        Write-Host "Publisher Date : $($epubMETA.PublisherDate)"
+                        Write-Host ""
+                    }
 
+                    # clone the original epub file
+                    $epubCloneOSInfo = Clone-EpubToEpubCopy -EpubFileInfo $epubOSInfo
+                    
                     # optimize the epub images we support (*.jpg and *.jpeg)
-                    #Optimize-EpubBody -EpubFileInfo $epubOSInfo -EpubImageTypes "jpg"
-                    #Optimize-EpubBody -EpubFileInfo $epubOSInfo -EpubImageTypes "jpeg"
+                    If ($epubCloneOSInfo -ne $null) {
+                        Optimize-EpubBody -EpubOriginalFileInfo $epubOSInfo -EpubOptimizedFileInfo $epubCloneOSInfo -EpubImageTypes "jpg"
+                        Optimize-EpubBody -EpubOriginalFileInfo $epubOSInfo -EpubOptimizedFileInfo $epubCloneOSInfo -EpubImageTypes "jpeg"
+                    }
 
-                    # repackage
+                    # repackage (DEPRICATED)
                     #Pack-FilesToEpub -EpubFileInfo $epubOSInfo
+
+                    # clean up temporary unzipped files
+                    Cleanup-UnpackedEpubFiles -EpubFileInfo $epubOSInfo
+
+                    # output result filename for user friendliness (copy/paste functionality)
+                    Write-Host ""
+                    Write-Host "Original file : $($epubOSInfo.FullName)"
+
+                    If ($epubCloneOSInfo -ne $null) {
+                        Write-Host "Optimized file : $($epubCloneOSInfo.FullName)"
+                    } Else {
+                        Write-Host "Optimized file : none (???)"
+                    }
+
+                    Write-Host ""
 
                     # free
                     $epubOSInfo = $null
+                    $epubCloneOSInfo = $null
 
-                    Write-Host "Done."
+                    Write-Host "-- Done"
                 } Else {
                     Write-Warning "[!] No epub action needed! Size is okay."
                 } 
@@ -515,6 +665,6 @@ Function Main
 
 
 
-# call main in c-style
+# call main in C-style
 Main -Arguments $args
 
