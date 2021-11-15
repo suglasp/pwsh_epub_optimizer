@@ -14,6 +14,6 @@ Usage:
 Version History:
 14/11/2021 : First versions.
              Made a few tweaks to it in the same day.
-			 Last version was in fact non-working, because i commented out the Optimization method for debugging reasons, and forgot te re-enable the method when pushed to repo.
+             Last version was in fact non-working, because i commented out the Optimization method for debugging reasons, and forgot te re-enable the method when pushed to repo.
 15/11/2021 : Created a more optimized and efficiënt version (not in terms of speed, but in optimizing the end result epub file).
 

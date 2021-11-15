@@ -238,7 +238,7 @@ Function Pack-FilesToEpub
 # Notice : Every time you call this Method, the epub file (or zip file let's say) is opened and written to.
 # Ideal, you would open once the file, edit it all the way until it's done and then close it.
 # Because we work here with a scripting language and can any time be interrupted by the user,
-# we do it the rought and chose the safer, I/O intensive, way to go.
+# we do it the less I/O efficient, but safer approach.
 #
 Function Replace-FileInEpubFile
 {
