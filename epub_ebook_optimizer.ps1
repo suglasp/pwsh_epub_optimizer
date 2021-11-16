@@ -5,7 +5,7 @@
 # https://github.com/suglasp/pwsh_epub_optimizer.git
 #
 # Created : 14/11/2021
-# Updated : 15/11/2021
+# Updated : 16/11/2021
 #
 # Google Books only supports epub files up to 100Mb in size.
 # This created the need for me to optimize epub books.
@@ -30,8 +30,8 @@ Add-Type -AssemblyName System.XML
 
 
 #region Global vars
-[UInt32]$Global:DefaultSizeLimit = (100*1024*1024)  # Default epub files larger then 100Mb (converted to bytes)
-[Long]$Global:DefaultCompression = 50                 # Default 50% JPG compression
+[UInt32]$Global:DefaultSizeLimit = (95*1024*1024)  # Default epub files larger then 100Mb (converted to bytes)
+[Long]$Global:DefaultCompression = 50               # Default 50% JPG compression
 #endregion
 
 
@@ -620,12 +620,23 @@ Function Main
                     Write-Host "Original file : $($epubOSInfo.FullName)"
 
                     If ($epubCloneOSInfo -ne $null) {
-                        Write-Host "Optimized file : $($epubCloneOSInfo.FullName)"
-                    } Else {
-                        Write-Host "Optimized file : none (???)"
-                    }
+                        # refresh de cloned file info (it should be same size or smaller)
+                        $epubCloneOSInfo = Get-EpubRawDetails -EpubFile $epubCloneOSInfo.FullName
 
-                    Write-Host ""
+                        # calculate percentage of file size reduction
+                        If ($epubCloneOSInfo.Length -lt $epubOSInfo.Length) {
+                            [Double]$FileSizeDiff = [Math]::Round((($epubOSInfo.Length - $epubCloneOSInfo.Length) / 1024 / 1024))
+                            [Int32]$procentReduction = (($FileSizeDiff / 100) * [Math]::Round(($epubOSInfo.Length / 1024 / 1024)))
+
+                            Write-Host "Optimized file : $($epubCloneOSInfo.FullName) [$($procentReduction)% size reduction]"
+                        } Else {
+                            Write-Host "Optimized file : $($epubCloneOSInfo.FullName) [no size reduction gain]"
+                        }
+
+                        Write-Host ""
+                    } Else {
+                        Write-Host "Optimized file : Unknown [???]"
+                    }
 
                     # free
                     $epubOSInfo = $null
@@ -633,6 +644,8 @@ Function Main
 
                     Write-Host "-- Done"
                 } Else {
+                    Write-Host $TargetSizeLimit
+                    Write-Host $epubOSInfo.Length
                     Write-Warning "[!] No epub action needed! Size is okay."
                 } 
             } Else {
