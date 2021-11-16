@@ -22,3 +22,9 @@ Tips & tricks:
 - Loop trough a folder and optimize epub files in bulk
 PS C:\epub_tool> $files = @(Get-ChildItem -Path C:\SomePathWithFiles -Filter *.epub)
 PS C:\epub_tool> $files | % { .\epub_ebook_optimizer.ps1 $_.FullName }
+
+- The script shows "WARNING: [!] No epub action needed! Size is okay."
+Always check you use absolute paths instead of relative paths.
+For example, dot sourced paths in Powershell will not work.
+PS C:\epub_tool> .\epub_ebook_optimizer.ps1 .\MyEBookFile.epub                # will not work
+PS C:\epub_tool> .\epub_ebook_optimizer.ps1 "C:\epub_tool\MyEBookFile.epub"   # does work
