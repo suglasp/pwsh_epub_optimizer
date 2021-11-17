@@ -5,18 +5,23 @@
 # https://github.com/suglasp/pwsh_epub_optimizer.git
 #
 # Created : 14/11/2021
-# Updated : 16/11/2021
+# Updated : 17/11/2021
 #
-# Google Books only supports epub files up to 100Mb in size.
+# Google Books only supports epub files up to ~100Mb in size.
 # This created the need for me to optimize epub books.
-# It does no more, then opening a epub file and scan for jp(e)g files and compress them some bit more
+# It does no more, then opening a epub file and scan .png files. convert .png to .jpg. And then for all jp(e)g files, increase compression for them a bit more
 # to create a smaller resulting epub file as an end result.
-# Does not work on epub files containing .gif, .svg and .png files.
+# Does not work on epub files containing .gif and .svg image files.
 #
 # Usage:
 # .\epub_ebook_optimizer.ps1 <path\myebookfile.epub>  # single argument is the same as providing arg -epub <path\myebookfile.epub>
-# .\epub_ebook_optimizer.ps1 -epub <path\myebookfile.epub> [-limit <size as bytes>] [-compression <0..100 as procent>]
+# .\epub_ebook_optimizer.ps1 -epub <path\myebookfile.epub> [-limit <size in bytes>] [-compression <0..100 in procent>]
 #
+# Earlier versions only compressed the .jp(e)g files. This resulted with some test epub files containing only jpg files in about a 20%-30% smaller epub file.
+# Newer version also converts .png files to .jp(e)g files. This resulted with some test epub files containing a mix of jpg and png files in about a 50%-60% smaller epub file.
+# The size gain, does result that images will look less clear (because they are Lossy jpeg's compressed default at 50%).
+#
+
 
 #Requires -Version 5.1
 
@@ -30,8 +35,8 @@ Add-Type -AssemblyName System.XML
 
 
 #region Global vars
-[UInt32]$Global:DefaultSizeLimit = (95*1024*1024)  # Default epub files larger then 100Mb (converted to bytes)
-[Long]$Global:DefaultCompression = 50               # Default 50% JPG compression
+[UInt32]$Global:DefaultSizeLimit     = (98*1024*1024)   # Default epub files larger then 98Mb (converted to bytes). Ideal is 100Mb, but we set it a bit smaller
+[Long]$Global:DefaultJPEGCompression = 50               # Default 50% JPG compression
 #endregion
 
 
@@ -90,12 +95,43 @@ Function Optimize-JPEGImageFile
         # swap out old image with new one on disk
         Remove-Item -Path $JPEGImageFilePath -Force -ErrorAction SilentlyContinue  # delete original
         Move-Item -Path $newJPEGImageFilePath -Destination $JPEGImageFilePath -ErrorAction SilentlyContinue # rename old one with new one
-
-        # inject into original epub archive file
-
     }
 }
+
+
+#
+# Function : Convert-PNGtoJPGFormat
+# Convert png files to jp(e)g images
+#
+Function Convert-PNGtoJPGFormat
+{
+    Param(
+        [String]$FolderToSearch
+    )
+
+    [System.Collections.ArrayList]$PNGFiles = @(Get-ChildItem -Path $FolderToSearch -Filter *.png -Recurse)
+
+    If ($PNGFiles.Count -gt 0) {
+        ForEach($PNGFile In $PNGFiles) {
+            If (Test-Path -Path $PNGFile.FullName) {
+                # Open PNG and Save as a JP(E)G
+                Write-Host "Converting PNG2JPG : $($PNGFile)..."
+                [System.Drawing.Image]$png = [System.Drawing.Image]::FromFile($PNGFile.FullName)
+                $png.Save($PNGFile.FullName.Replace(".png", ".jpg"), [System.Drawing.Imaging.ImageFormat]::JPEG)
+                $png.Dispose()
+
+                # Clean PNG file
+                Remove-Item -Path $PNGFile.FullName -Confirm:$false
+            }
+        }
+    } Else {
+    #    Write-Warning "Nothing to do!"
+    }
+
+    Return $PNGFiles
+}
 #endregion
+
 
 #region Methods for handling the epub file format
 #
@@ -236,7 +272,7 @@ Function Pack-FilesToEpub
 # Replace a file inside a epub archive file
 #
 # Notice : Every time you call this Method, the epub file (or zip file let's say) is opened and written to.
-# Ideal, you would open once the file, edit it all the way until it's done and then close it.
+# Ideal, you would open once the file, edit it all the way until it's done and then close it (using a array as input with files te replace).
 # Because we work here with a scripting language and can any time be interrupted by the user,
 # we do it the less I/O efficient, but safer approach.
 #
@@ -253,16 +289,69 @@ Function Replace-FileInEpubFile
         #$epubArchive =  [System.IO.Compression.ZipFile]::Open($EpubFileInfo.FullName, [System.IO.Compression.ZipArchiveMode]::Update, [System.Text.Encoding]::Default)
         $epubContentFiles = $epubArchive.Entries.Where({$_.name -eq $(Split-Path -Path $ReplacementFile -Leaf)})
 
-        # Update the epub archive contents
-        [System.IO.StreamReader]$OptimizedImgFileStream = [System.IO.StreamReader]($ReplacementFile)
-        $desiredFile = [System.IO.StreamWriter]($epubContentFiles).Open()
-        $desiredFile.BaseStream.SetLength(0)
-        $desiredFile.BaseStream.Position = 0
-        $OptimizedImgFileStream.BaseStream.CopyTo($desiredFile.BaseStream)
-        $desiredFile.Flush()
-        $desiredFile.Close()
-        $OptimizedImgFileStream.Close()
+        If ($epubContentFiles.Count -gt 0) {
+            # Update the epub archive contents
+            [System.IO.StreamReader]$OptimizedImgFileStream = [System.IO.StreamReader]($ReplacementFile)
+                
+            $desiredFile = [System.IO.StreamWriter]($epubContentFiles).Open()
+            If ($desiredFile -ne $null) {
+                $desiredFile.BaseStream.SetLength(0)
+                $desiredFile.BaseStream.Position = 0
+                $OptimizedImgFileStream.BaseStream.CopyTo($desiredFile.BaseStream)
+                $desiredFile.Flush()
+                $desiredFile.Close()
+            } Else {
+                Write-Warning "[!] Error while updating data lump in archive!"
+            }
 
+            $OptimizedImgFileStream.Close()
+        } Else {
+            Write-Warning "[!] Unable to update data lump in archive!"
+        }
+        
+        
+        # Write the changes and close the epub archive file
+        $epubArchive.Dispose()
+    }
+}
+
+
+#
+# Function : Rename-FileInEpubFile
+# Rename a file inside a epub archive file
+# Creates a new file entry and deletes the old one.
+# The new entry will have no data, we don't care anyway because in a later stage, we will fill it up with new data from external.
+#
+# Notice : Every time you call this Method, the epub file (or zip file let's say) is opened and written to.
+# Ideal, you would open once the file, edit it all the way until it's done and then close it (using a array as input with files te replace).
+# Because we work here with a scripting language and can any time be interrupted by the user,
+# we do it the less I/O efficient, but safer approach.
+#
+Function Rename-FileInEpubFile
+{
+    Param(
+        [System.IO.FileInfo]$EpubFileInfo,
+        [string]$SearchFile,
+        [string]$ReplaceFile
+    )
+
+    If ( (-not ($EpubFileInfo -eq $null)) -and (-not ([string]::IsNullOrEmpty($SearchFile))) -and (-not ([string]::IsNullOrEmpty($ReplaceFile))) ) {
+        # Open epub archive and find the particular content file (assumes only one is inside the epub file archive)
+        $epubArchive =  [System.IO.Compression.ZipFile]::Open($EpubFileInfo.FullName, [System.IO.Compression.ZipArchiveMode]::Update)
+        #$epubArchive =  [System.IO.Compression.ZipFile]::Open($EpubFileInfo.FullName, [System.IO.Compression.ZipArchiveMode]::Update, [System.Text.Encoding]::Default)
+        $epubContentFiles = $epubArchive.Entries.Where({$_.name -eq $(Split-Path -Path $SearchFile -Leaf)})
+
+        If ($epubContentFiles.Count -gt 0) {
+            ForEach($archiveFile In $epubContentFiles) {
+                $newFile = $epubArchive.CreateEntry("$(Split-Path -Path $archiveFile.FullName -Parent)\$($ReplaceFile)")
+                # Normally, we would copy the data stream from 'old entry' to the 'new entry'.
+                # We skip this step. Later in the process, we inject the .jpg data stream from external to the new entries.
+                $archiveFile.Delete()
+            }
+        } Else {
+            Write-Warning "[!] Unable to update data lump in archive!"
+        }        
+        
         # Write the changes and close the epub archive file
         $epubArchive.Dispose()
     }
@@ -279,7 +368,8 @@ Function Clone-EpubToEpubCopy
         [System.IO.FileInfo]$EpubFileInfo
     )
 
-    Write-Host "Cloning epub file..."
+    Write-Host ""
+    Write-Host ">> Cloning epub file..."
 
     $epubCloneOSInfo = $null
 
@@ -315,14 +405,16 @@ Function Clone-EpubToEpubCopy
 # Function : Optimize-EpubBody
 # Optimize the unpacked data files of a epub archive file
 #
-Function Optimize-EpubBody
+Function Optimize-EpubBodyLossyImages
 {
     Param(
         [System.IO.FileInfo]$EpubOriginalFileInfo,
-        [System.IO.FileInfo]$EpubOptimizedFileInfo,
         [string]$EpubImageTypes = "jpg",
         [Int32]$ImageCompressionLevel = 50L
     )
+
+    Write-Host ""
+    Write-Host ">> File type $($EpubImageTypes):"
 
     If (-not ($EpubOriginalFileInfo -eq $null)) {
         # Build extract folder
@@ -338,23 +430,8 @@ Function Optimize-EpubBody
                 Write-Host "Range : $($imgFiles.Length) files for optimization"
 
                 ForEach($imgFile In $imgFiles) {
-                    # calculate image signature
-                    [string]$beforeSignature = (Get-FileHash -Path $imgFile -Algorithm SHA1).Hash
-
                     # Compress Image
                     Optimize-JPEGImageFile -JPEGImageFilePath $imgFile -CompressionLevel $ImageCompressionLevel
-
-                    # calculate optimize image signature
-                    [string]$afterSignature = (Get-FileHash -Path $imgFile -Algorithm SHA1).Hash
-
-                    # if the file was changes, replace it
-                    If (-not ($beforeSignature -eq $afterSignature)) {
-                        Write-Host "  Optimizing -> $(Split-Path -Path $imgFile -Leaf)"
-                        # Repackage directly into the cloned epub archive file
-                        Replace-FileInEpubFile -EpubFileInfo $EpubOptimizedFileInfo -ReplacementFile $imgFile
-                    } Else {
-                        Write-Host "  Unchanged -> $(Split-Path -Path $imgFile -Leaf)"
-                    }
                 }
             } Else {
                 Write-Warning "[i] Nothing to optimize for $($EpubImageTypes) image type format."
@@ -362,6 +439,79 @@ Function Optimize-EpubBody
         }
     } Else {
         Write-Warning "[!] Optimization failed!"
+    }
+}
+
+
+#
+# Function : Calc-FolderHashList
+# Calculate hashes of all files in a folder
+#
+Function Calc-FolderHashList
+{
+    Param (
+        [string]$TargetFolder
+    )
+
+    Write-Host ""
+    Write-Host "Indexing $($TargetFolder)..."
+
+    [hashtable]$FileHashList = @{}
+
+    If (Test-Path -Path $TargetFolder) {
+        [string[]]$allFiles = @(Get-ChildItem -Path $TargetFolder -Include "*.*" -Recurse)
+
+        ForEach($someFile In $allFiles) {
+            # calculate file signature
+            [bool]$success = $false
+            try {
+                [string]$fileSig = (Get-FileHash -Path $someFile -Algorithm SHA256).Hash
+                [void]$FileHashList.Add($fileSig, $someFile)
+                $success = $true
+            } catch {
+            }
+
+            # retry with signature of filepath
+            If (-not ($success)) {                
+                [string]$fileSig = (Get-FileHash -InputStream $([IO.MemoryStream]::new([byte[]][char[]]$someFile)) -Algorithm SHA256).Hash
+                [void]$FileHashList.Add($fileSig, $someFile)
+                $success = $true
+            }
+        }
+    }
+    
+    Return $FileHashList
+}
+
+
+#
+# Function : Replace-StringInFiles
+# Replace a string in a file with some other string
+#
+Function Replace-StringInFiles
+{
+    Param (
+        [string]$FolderToSearch,
+        [string]$Find,
+        [string]$Replace
+    )
+    
+    #Write-Host "REPLACE : $($FolderToSearch) :: $($Find) => $($Replace)"
+    Write-Host "Updating png reference $($Find) => $($Replace) in epub body..."
+    
+    If (Test-Path -Path $FolderToSearch) {
+        # Find all files
+        #[string[]]$dataFiles = @(Get-ChildItem -Path $FolderToSearch -Include @("*.*") -Exclude @("*.jpg, *.jpeg, *.svg, *.gif") -Recurse)
+        #[string[]]$dataFiles = @(Get-ChildItem -Path $FolderToSearch -Include @("*.opf", "*.*htm*", "*.css") -Exclude @("*.jpg, *.jpeg, *.svg, *.gif") -Recurse)
+        [string[]]$dataFiles = @(Get-ChildItem -Path $FolderToSearch -Include @("*.opf", "*.*htm*", "*.css", "*.xml", "*.ncx") -Recurse)
+
+        ForEach($dataFile In $dataFiles) {
+            Try {
+                (Get-Content -Path $dataFile).Replace($Find, $Replace) | Set-Content -Path $dataFile
+            } Catch {
+                Write-Warning "[!] Could not update content in file $($dataFile)."
+            }
+        }
     }
 }
 
@@ -391,7 +541,8 @@ Function Get-EpubMetaDetails
         [System.IO.FileInfo]$EpubFileInfo
     )
 
-    Write-Host "Fetching META data..."
+    Write-Host ""
+    Write-Host ">> Fetching META data..."
 
     # create a epub META template object
     [PSObject]$epubMetaHeader = New-Object PSObject
@@ -542,9 +693,9 @@ Function Main
     Write-Host ""
 
     # private parameters
-    [string]$TargetFile       = [string]::Empty            # default no file
-    [UInt32]$TargetSizeLimit  = $Global:DefaultSizeLimit   # default to 100Mb
-    [Long]$TargetCompression  = $Global:DefaultCompression # default JPG compression level   
+    [string]$TargetFile       = [string]::Empty                # default no file
+    [UInt32]$TargetSizeLimit  = $Global:DefaultSizeLimit       # default to 98Mb (just a bit smaller then 100Mb)
+    [Long]$TargetCompression  = $Global:DefaultJPEGCompression # default JPG compression level
 
     # process script cli arguments
     If ($Arguments) {
@@ -600,22 +751,88 @@ Function Main
                         Write-Host ""
                     }
 
-                    # clone the original epub file
+                    # calc hashes of files
+                    [hashtable]$originalHashList = Calc-FolderHashList -TargetFolder "$($epubOSInfo.Directory)\$($epubOSInfo.BaseName)"
+
+                    # Clone the original epub file
                     $epubCloneOSInfo = Clone-EpubToEpubCopy -EpubFileInfo $epubOSInfo
-                    
-                    # optimize the epub images we support (*.jpg and *.jpeg)
+
+                    # first, convert PNG files to JPG. This makes helps to make the epub file smaller.
+                    # we do this on the original uncompressed epub data
+                    #$convertedPNGFiles = Convert-PNGtoJPGFormat -FolderToSearch $(Split-Path -Path $epubOSInfo.FullName -Parent)
+                    $convertedPNGFiles = Convert-PNGtoJPGFormat -FolderToSearch "$($epubOSInfo.Directory)\$($epubOSInfo.BaseName)"
+
+                    # update the table of content file (mostly called Package.opf) and also *.xhtml body files
+                    # we do this on the original uncompressed epub data
+                    If ($convertedPNGFiles.Length -gt 0) {
+                        ForEach($convertedPNGFile In $convertedPNGFiles) {
+                            #Replace-StringInFiles -FolderToSearch $(Split-Path -Path $convertedPNGFile.FullName -Parent) -Find $(Split-Path -Path $convertedPNGFile.FullName -Leaf) -Replace $((Split-Path -Path $convertedPNGFile.FullName -Leaf).Replace(".png", ".jpg"))
+                            Replace-StringInFiles -FolderToSearch "$($epubOSInfo.Directory)\$($epubOSInfo.BaseName)" -Find $(Split-Path -Path $convertedPNGFile.FullName -Leaf) -Replace $((Split-Path -Path $convertedPNGFile.FullName -Leaf).Replace(".png", ".jpg"))
+                        }
+                    }
+
+                    # optimize the epub lossy images we support (*.jpg and *.jpeg)
+                    # we do this on the original uncompressed epub data
                     If ($epubCloneOSInfo -ne $null) {
-                        Optimize-EpubBody -EpubOriginalFileInfo $epubOSInfo -EpubOptimizedFileInfo $epubCloneOSInfo -EpubImageTypes "jpg"
-                        Optimize-EpubBody -EpubOriginalFileInfo $epubOSInfo -EpubOptimizedFileInfo $epubCloneOSInfo -EpubImageTypes "jpeg"
+                        # rename filename .png to .jpg inside the new epub archive
+                        If ($convertedPNGFiles.Length -gt 0) {
+                            ForEach($convertedPNGFile In $convertedPNGFiles) {
+                                Rename-FileInEpubFile -EpubFileInfo $epubCloneOSInfo -SearchFile $(Split-Path -Path $convertedPNGFile.FullName -Leaf) -ReplaceFile $((Split-Path -Path $convertedPNGFile.FullName -Leaf).Replace(".png", ".jpg"))
+                                #Replace-FileInEpubFile -EpubFileInfo $epubCloneOSInfo -ReplacementFile $((Split-Path -Path $convertedPNGFile.FullName -Leaf).Replace(".png", ".jpg"))
+                            }
+                        }
+
+                        # optimize the jpg and jpeg files
+                        Optimize-EpubBodyLossyImages -EpubOriginalFileInfo $epubOSInfo -EpubImageTypes "jpg"
+                        Optimize-EpubBodyLossyImages -EpubOriginalFileInfo $epubOSInfo -EpubImageTypes "jpeg"
                     }
 
                     # repackage (DEPRICATED)
                     #Pack-FilesToEpub -EpubFileInfo $epubOSInfo
+                    
+                    # re-calc hashes of files
+                    [hashtable]$changedHashList = Calc-FolderHashList -TargetFolder "$($epubOSInfo.Directory)\$($epubOSInfo.BaseName)"
 
-                    # clean up temporary unzipped files
+                    # if the file was changed, replace it in the optimize epub archive file
+                    Write-Host ""
+                    Write-Host ">> Comparing index..."
+                    [System.Array]$compareResult = Compare-Object -ReferenceObject $($originalHashList.Keys) -DifferenceObject $($changedHashList.Keys) -IncludeEqual
+
+                    # Repackage directly into the cloned epub archive file
+                    Write-Host ""
+                    Write-Host ">> Repacking $(Split-Path -Path $epubCloneOSInfo.FullName -Leaf)..."
+                    ForEach($r In $compareResult) {
+                        #If ($r.SideIndicator -eq "==") {
+                        #    [string]$changedFileName = $changedHashList[$r.InputObject]
+                        #    Write-Host "EQUAL : $($changedFileName)"
+                        #}
+
+                        #If ($r.SideIndicator -eq "<=") {
+                        #    [string]$changedFileName = $originalHashList[$r.InputObject]
+                        #
+                        #}
+                        
+                        If ($r.SideIndicator -eq "=>") {
+                            [string]$changedFileName = $changedHashList[$r.InputObject]
+                            #Write-Host "CHANGED : $($changedFileName)"
+                            If ([System.IO.Path]::GetExtension($changedFileName) -like ".jp*g") {
+                                Write-Host "Optimizing -> $(Split-Path -Path $changedFileName -Leaf)"
+                            } Else {
+                                Write-Host "Updating   -> $(Split-Path -Path $changedFileName -Leaf)"
+                            }
+
+                            Replace-FileInEpubFile -EpubFileInfo $EpubOptimizedFileInfo -ReplacementFile $changedFileName
+                        }
+                    }
+
+                    # clean up temporary unzipped epub files
                     Cleanup-UnpackedEpubFiles -EpubFileInfo $epubOSInfo
 
                     # output result filename for user friendliness (copy/paste functionality)
+                    Write-Host ""
+                    Write-Host ""
+                    Write-Host "// ----------- RESULT -------------- //"
+                    Write-Host ""
                     Write-Host ""
                     Write-Host "Original file : $($epubOSInfo.FullName)"
 
@@ -644,8 +861,6 @@ Function Main
 
                     Write-Host "-- Done"
                 } Else {
-                    Write-Host $TargetSizeLimit
-                    Write-Host $epubOSInfo.Length
                     Write-Warning "[!] No epub action needed! Size is okay."
                 } 
             } Else {
@@ -658,9 +873,9 @@ Function Main
         Write-Warning "[!] Provide a target epub file using parameter -epub <file>, and optionally -limit or -compression!"
         Write-Host ""
         Write-Host "Usage : .\$(Split-Path -Path $MyInvocation.ScriptName -Leaf) <path\ebookfile.epub>"
-        Write-Host "Usage : .\$(Split-Path -Path $MyInvocation.ScriptName -Leaf) -epub <path\ebookfile.epub> [-limit <size as bytes>] [-compression <0..100 as procent>]"
+        Write-Host "Usage : .\$(Split-Path -Path $MyInvocation.ScriptName -Leaf) -epub <path\ebookfile.epub> [-limit <size in bytes>] [-compression <0..100 in %>]"
         Write-Host "[i] Default -limit size is $($Global:DefaultSizeLimit) bytes."
-        Write-Host "[i] Default -compression ratio value is $($Global:DefaultCompression)%."
+        Write-Host "[i] Default -compression ratio value is $($Global:DefaultJPEGCompression)%."
         Write-Host ""
     }
 

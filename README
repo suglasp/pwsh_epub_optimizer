@@ -1,10 +1,12 @@
 
 PowerShell epub EBook optimizer
+-=============================-
 
-Script that can read a epub file and try to compress the images a bit more, so the total epub file gets smaller.
+Utility script that can read a ebook epub file and try to compress the images a bit more, so the total epub file gets smaller.
 
 ! Does not work on epub files containing .gif, .svg and .png files.   !
 ! Only epub files containing .jp(e)g images are supported.            !
+
 
 Usage:
 .\epub_ebook_optimizer.ps1 <path\myebookfile.epub>  # single argument is the same as providing arg -epub <path\myebookfile.epub>
@@ -16,6 +18,9 @@ Version History:
              Made a few tweaks to it in the same day.
              Last version was in fact non-working, because i commented out the Optimization method for debugging reasons, and forgot te re-enable the method when pushed to repo.
 15/11/2021 : Created a more optimized and efficiënt version (not in terms of speed, but in optimizing the end result epub file).
+16/11/2021 : Preperations for converting .png files to .jpg.
+             Lowered the default size for epub archive files from 100Mb to 98Mb.
+17/11/2021 : Created version that can handle .png files (converts files to .jpg format).
 
 
 Tips & tricks:
