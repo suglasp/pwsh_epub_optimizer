@@ -5,7 +5,7 @@
 # https://github.com/suglasp/pwsh_epub_optimizer.git
 #
 # Created : 14/11/2021
-# Updated : 17/11/2021
+# Updated : 20/11/2021
 #
 # Google Books only supports epub files up to ~100Mb in size.
 # This created the need for me to optimize epub books.
@@ -292,7 +292,7 @@ Function Replace-FileInEpubFile
         If ($epubContentFiles.Count -gt 0) {
             # Update the epub archive contents
             [System.IO.StreamReader]$OptimizedImgFileStream = [System.IO.StreamReader]($ReplacementFile)
-                
+
             $desiredFile = [System.IO.StreamWriter]($epubContentFiles).Open()
             If ($desiredFile -ne $null) {
                 $desiredFile.BaseStream.SetLength(0)
@@ -383,6 +383,7 @@ Function Clone-EpubToEpubCopy
         # delete old optimized epub file
         If (Test-Path -Path $epubOptimizedFileName) {
             Remove-Item $epubOptimizedFileName -Force -Confirm:$false
+            Write-Host "[!] Same filename did exist as the clone name, deleted."
         }
 
         # copy the original to the new file
@@ -765,6 +766,7 @@ Function Main
                     # update the table of content file (mostly called Package.opf) and also *.xhtml body files
                     # we do this on the original uncompressed epub data
                     If ($convertedPNGFiles.Length -gt 0) {
+                        Write-Host "Range : $($convertedPNGFiles.Length) PNG files for conversion to JPG"
                         ForEach($convertedPNGFile In $convertedPNGFiles) {
                             #Replace-StringInFiles -FolderToSearch $(Split-Path -Path $convertedPNGFile.FullName -Parent) -Find $(Split-Path -Path $convertedPNGFile.FullName -Leaf) -Replace $((Split-Path -Path $convertedPNGFile.FullName -Leaf).Replace(".png", ".jpg"))
                             Replace-StringInFiles -FolderToSearch "$($epubOSInfo.Directory)\$($epubOSInfo.BaseName)" -Find $(Split-Path -Path $convertedPNGFile.FullName -Leaf) -Replace $((Split-Path -Path $convertedPNGFile.FullName -Leaf).Replace(".png", ".jpg"))
@@ -801,6 +803,8 @@ Function Main
                     # Repackage directly into the cloned epub archive file
                     Write-Host ""
                     Write-Host ">> Repacking $(Split-Path -Path $epubCloneOSInfo.FullName -Leaf)..."
+                    Write-Host "Range : $($compareResult.Count) files for repacking"
+
                     ForEach($r In $compareResult) {
                         #If ($r.SideIndicator -eq "==") {
                         #    [string]$changedFileName = $changedHashList[$r.InputObject]
@@ -821,6 +825,7 @@ Function Main
                                 Write-Host "Updating   -> $(Split-Path -Path $changedFileName -Leaf)"
                             }
 
+                            # update a file stream in a epub archive file
                             Replace-FileInEpubFile -EpubFileInfo $EpubOptimizedFileInfo -ReplacementFile $changedFileName
                         }
                     }

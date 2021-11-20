@@ -21,6 +21,7 @@ Version History:
 16/11/2021 : Preperations for converting .png files to .jpg.
              Lowered the default size for epub archive files from 100Mb to 98Mb.
 17/11/2021 : Created version that can handle .png files (converts files to .jpg format).
+20/11/2021 : Small improvements
 
 
 Tips & tricks:
