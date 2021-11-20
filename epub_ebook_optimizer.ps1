@@ -213,11 +213,13 @@ Function Cleanup-UnpackedEpubFiles
     If (-not ($EpubFileInfo -eq $null)) {
         [string]$extractFolder = "$($EpubFileInfo.Directory)\$($EpubFileInfo.BaseName)"
 
-        # remove extracted epub files
-        Get-ChildItem -Path $extractFolder -Recurse | Remove-Item -Force -Recurse -Confirm:$false
+        If (Test-Path -Path $extractFolder) {
+            # remove extracted epub files
+            Get-ChildItem -Path $extractFolder -Recurse | Remove-Item -Force -Recurse -Confirm:$false
         
-        # remove extract epub folder
-        Remove-Item $extractFolder -Force -Confirm:$false
+            # remove extract epub folder
+            Remove-Item $extractFolder -Force -Confirm:$false
+        }
     }
 }
 
@@ -733,6 +735,10 @@ Function Main
 
             If ($epubOSInfo.Extension.ToLowerInvariant() -eq ".epub") {
                 If ($TargetSizeLimit -lt $epubOSInfo.Length) {
+                    # clean up temporary unzipped epub files (from a previous run).
+                    # if the script is interrupted/aborted by user or something goes wrong, remaining unpacked files are left behind.
+                    Cleanup-UnpackedEpubFiles -EpubFileInfo $epubOSInfo
+
                     # unpack the epub file
                     Unpack-EpubToFiles -EpubFileInfo $epubOSInfo
 
