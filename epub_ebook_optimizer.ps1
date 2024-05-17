@@ -5,7 +5,7 @@
 # https://github.com/suglasp/pwsh_epub_optimizer.git
 #
 # Created : 14/11/2021
-# Updated : 20/11/2021
+# Updated : 17/05/2024
 #
 # Google Books only supports epub files up to ~100Mb in size.
 # This created the need for me to optimize epub books.
@@ -46,16 +46,16 @@ Add-Type -AssemblyName System.XML
 # Get the .NET System imaging codecs
 #
 Function Get-ImageEncoder
-{  
+{
     param(
         [System.Drawing.Imaging.ImageFormat]$format
     )
 
     [System.Drawing.Imaging.ImageCodecInfo[]]$codecs = [System.Drawing.Imaging.ImageCodecInfo]::GetImageEncoders()
-    ForEach ($codec In $codecs)  
-    {  
-        If ($codec.FormatID -eq $format.Guid)  
-        {  
+    ForEach ($codec In $codecs)
+    {
+        If ($codec.FormatID -eq $format.Guid)
+        {
             Return $codec
         }
     }
@@ -69,7 +69,7 @@ Function Get-ImageEncoder
 # Optimize images for jp(e)g or png
 #
 Function Optimize-JPEGImageFile
-{  
+{
     Param(
         [string]$JPEGImageFilePath,
         [Long]$CompressionLevel = 50
@@ -81,7 +81,7 @@ Function Optimize-JPEGImageFile
         [string]$newJPEGImageFilePath = $JPEGImageFilePath.Replace($Extension, "_new$($Extension)")
         [System.Drawing.Bitmap]$bmp = New-Object System.Drawing.Bitmap($JPEGImageFilePath)
 
-        If ($bmp -ne $null) {
+        If ($null -ne $bmp) {
             [System.Drawing.Imaging.ImageCodecInfo]$jpgEncoder = Get-ImageEncoder([System.Drawing.Imaging.ImageFormat]::Jpeg)
             [System.Drawing.Imaging.Encoder]$myEncoder = [System.Drawing.Imaging.Encoder]::Quality
             [System.Drawing.Imaging.EncoderParameters]$myEncoderParameters = New-Object System.Drawing.Imaging.EncoderParameters(1)
@@ -177,7 +177,7 @@ Function Unpack-EpubToFiles
     Param(
         [System.IO.FileInfo]$EpubFileInfo
     )
-    
+
     Write-Host "Verify and extracting epub..."
 
     If (-not ($EpubFileInfo -eq $null)) {
@@ -216,7 +216,7 @@ Function Cleanup-UnpackedEpubFiles
         If (Test-Path -Path $extractFolder) {
             # remove extracted epub files
             Get-ChildItem -Path $extractFolder -Recurse | Remove-Item -Force -Recurse -Confirm:$false
-        
+
             # remove extract epub folder
             Remove-Item $extractFolder -Force -Confirm:$false
         }
@@ -252,7 +252,7 @@ Function Pack-FilesToEpub
         # build extract folder path
         [string]$extractFolder = "$($EpubFileInfo.Directory)\$($EpubFileInfo.BaseName)"
         [string]$epubOptimizedFileName = $EpubFileInfo.FullName.Replace($Extension, "_optimized$($Extension)")
-        
+
         # delete old optimized epub file
         If (Test-Path -Path $epubOptimizedFileName) {
             Remove-Item $epubOptimizedFileName -Force -Confirm:$false
@@ -302,16 +302,18 @@ Function Replace-FileInEpubFile
                 $OptimizedImgFileStream.BaseStream.CopyTo($desiredFile.BaseStream)
                 $desiredFile.Flush()
                 $desiredFile.Close()
+                $desiredFile.Dispose()
             } Else {
                 Write-Warning "[!] Error while updating data lump in archive!"
             }
 
             $OptimizedImgFileStream.Close()
+            $OptimizedImgFileStream.Dispose()
         } Else {
             Write-Warning "[!] Unable to update data lump in archive!"
         }
-        
-        
+
+
         # Write the changes and close the epub archive file
         $epubArchive.Dispose()
     }
@@ -337,23 +339,101 @@ Function Rename-FileInEpubFile
         [string]$ReplaceFile
     )
 
-    If ( (-not ($EpubFileInfo -eq $null)) -and (-not ([string]::IsNullOrEmpty($SearchFile))) -and (-not ([string]::IsNullOrEmpty($ReplaceFile))) ) {
+    Delete-FileInEpubFile -EpubFileInfo $EpubFileInfo -DeleteFile $SearchFile
+    Add-FileInEpubFile -EpubFileInfo $EpubFileInfo -FileToAdd $ReplaceFile
+}
+
+
+#
+# Function : Add-FileInEpubFile
+# Add a file inside a epub archive file
+# Creates a new file entry.
+#
+# Notice : Every time you call this Method, the epub file (or zip file let's say) is opened and written to.
+# Ideal, you would open once the file, edit it all the way until it's done and then close it (using a array as input with files te replace).
+# Because we work here with a scripting language and can any time be interrupted by the user,
+# we do it the less I/O efficient, but safer approach.
+#
+Function Add-FileInEpubFile
+{
+    Param(
+        [System.IO.FileInfo]$EpubFileInfo,
+        [string]$FileToAdd
+    )
+
+    If ( (-not ($EpubFileInfo -eq $null)) -and (-not ([string]::IsNullOrEmpty($FileToAdd))) ) {
+        # build virtual path to add in zip archive
+        [string]$FileToAddPath = [string]::Empty
+        If ($FileToAdd.Contains($EpubFileInfo.DirectoryName)) {
+            $FileToAddPath = "$((Split-Path -Path $FileToAdd -Parent).Substring($EpubFileInfo.DirectoryName.Length +1, (Split-Path -Path $FileToAdd -Parent).Length - ($EpubFileInfo.DirectoryName.Length +1)))".Replace("\", "/")
+        } Else {
+            $FileToAddPath = "$((Split-Path -Path $FileToAdd -Parent).Substring(3, (Split-Path -Path $FileToAdd -Parent).Length -3))".Replace("\", "/") # folder without drive letter
+        }
+
         # Open epub archive and find the particular content file (assumes only one is inside the epub file archive)
         $epubArchive =  [System.IO.Compression.ZipFile]::Open($EpubFileInfo.FullName, [System.IO.Compression.ZipArchiveMode]::Update)
         #$epubArchive =  [System.IO.Compression.ZipFile]::Open($EpubFileInfo.FullName, [System.IO.Compression.ZipArchiveMode]::Update, [System.Text.Encoding]::Default)
-        $epubContentFiles = $epubArchive.Entries.Where({$_.name -eq $(Split-Path -Path $SearchFile -Leaf)})
+        
+        Write-Host "Archive added : $("$($FileToAddPath)/$(Split-Path -Path $FileToAdd -Leaf)")"
+
+        [System.IO.Compression.ZipArchiveEntry]$newFile = $epubArchive.CreateEntry("$($FileToAddPath)/$(Split-Path -Path $FileToAdd -Leaf)")
+        
+
+        [System.IO.StreamReader]$SourceFileStream = [System.IO.StreamReader]($FileToAdd)
+
+        $desiredFile = [System.IO.StreamWriter]($newFile.Name).Open()
+        If ($desiredFile -ne $null) {            
+            $desiredFile.BaseStream.SetLength(0)
+            $desiredFile.BaseStream.Position = 0
+            $SourceFileStream.BaseStream.CopyTo($desiredFile.BaseStream)
+            $desiredFile.Flush()
+            $desiredFile.Close()
+            $desiredFile.Dispose()
+            
+        } Else {
+            Write-Warning "[!] Error while adding data lump in archive!"
+        }
+
+        $SourceFileStream.Close()   
+        $SourceFileStream.Dispose()
+
+        # Write the changes and close the epub archive file
+        $epubArchive.Dispose()
+    }
+}
+
+
+#
+# Function : Delete-FileInEpubFile
+# Delete a file inside a epub archive file
+#
+# Notice : Every time you call this Method, the epub file (or zip file let's say) is opened and written to.
+# Ideal, you would open once the file, edit it all the way until it's done and then close it (using a array as input with files te replace).
+# Because we work here with a scripting language and can any time be interrupted by the user,
+# we do it the less I/O efficient, but safer approach.
+#
+Function Delete-FileInEpubFile
+{
+    Param(
+        [System.IO.FileInfo]$EpubFileInfo,
+        [string]$DeleteFile
+    )
+
+    If ( (-not ($EpubFileInfo -eq $null)) -and (-not ([string]::IsNullOrEmpty($DeleteFile))) ) {
+        # Open epub archive and find the particular content file (assumes only one is inside the epub file archive)
+        $epubArchive =  [System.IO.Compression.ZipFile]::Open($EpubFileInfo.FullName, [System.IO.Compression.ZipArchiveMode]::Update)
+        #$epubArchive =  [System.IO.Compression.ZipFile]::Open($EpubFileInfo.FullName, [System.IO.Compression.ZipArchiveMode]::Update, [System.Text.Encoding]::Default)
+        $epubContentFiles = $epubArchive.Entries.Where({$_.name -eq $(Split-Path -Path $DeleteFile -Leaf)})
 
         If ($epubContentFiles.Count -gt 0) {
-            ForEach($archiveFile In $epubContentFiles) {
-                $newFile = $epubArchive.CreateEntry("$(Split-Path -Path $archiveFile.FullName -Parent)\$($ReplaceFile)")
-                # Normally, we would copy the data stream from 'old entry' to the 'new entry'.
-                # We skip this step. Later in the process, we inject the .jpg data stream from external to the new entries.
-                $archiveFile.Delete()
+            ForEach($archiveFile In $epubContentFiles) {                
+                Write-Host "Archive delete : $($archiveFile)"
+                $archiveFile.Delete()                
             }
         } Else {
-            Write-Warning "[!] Unable to update data lump in archive!"
-        }        
-        
+            Write-Warning "[!] Nothing to delete in archive!"
+        }
+
         # Write the changes and close the epub archive file
         $epubArchive.Dispose()
     }
@@ -378,10 +458,10 @@ Function Clone-EpubToEpubCopy
     If (-not ($EpubFileInfo -eq $null)) {
         # get original file extension
         [string]$Extension = ([System.IO.Path]::GetExtension($EpubFileInfo.FullName))
-                
+
         # build new filename
         [string]$epubOptimizedFileName = $EpubFileInfo.FullName.Replace($Extension, "_optimized$($Extension)")
-        
+
         # delete old optimized epub file
         If (Test-Path -Path $epubOptimizedFileName) {
             Remove-Item $epubOptimizedFileName -Force -Confirm:$false
@@ -475,14 +555,14 @@ Function Calc-FolderHashList
             }
 
             # retry with signature of filepath
-            If (-not ($success)) {                
+            If (-not ($success)) {
                 [string]$fileSig = (Get-FileHash -InputStream $([IO.MemoryStream]::new([byte[]][char[]]$someFile)) -Algorithm SHA256).Hash
                 [void]$FileHashList.Add($fileSig, $someFile)
                 $success = $true
             }
         }
     }
-    
+
     Return $FileHashList
 }
 
@@ -498,10 +578,10 @@ Function Replace-StringInFiles
         [string]$Find,
         [string]$Replace
     )
-    
+
     #Write-Host "REPLACE : $($FolderToSearch) :: $($Find) => $($Replace)"
     Write-Host "Updating png reference $($Find) => $($Replace) in epub body..."
-    
+
     If (Test-Path -Path $FolderToSearch) {
         # Find all files
         #[string[]]$dataFiles = @(Get-ChildItem -Path $FolderToSearch -Include @("*.*") -Exclude @("*.jpg, *.jpeg, *.svg, *.gif") -Recurse)
@@ -573,10 +653,30 @@ Function Get-EpubMetaDetails
                 try {
                     # try xml reading the FIRST opf file
                     [System.IO.StreamReader]$opfRawDataStream = New-Object System.IO.StreamReader($opfFiles[0]) # read first META file. Mostly, there is only one.
-                    [System.Xml.XmlReader]$opfXmlReader = [System.Xml.XmlReader]::Create($opfRawDataStream.BaseStream)
-                    [System.Xml.XmlDocument]$opfXmlData = New-Object System.Xml.XmlDocument
-
-                    $opfXmlData.Load($opfXmlReader)
+                    [System.Xml.XmlReader]$opfXmlReader = $Null
+					[System.Xml.XmlDocument]$opfXmlData = $Null
+					
+					Try {
+						$opfXmlReader = [System.Xml.XmlReader]::Create($opfRawDataStream.BaseStream)
+						$opfXmlData = New-Object System.Xml.XmlDocument
+						$opfXmlData.Load($opfXmlReader)
+					} Catch {
+						# Default Loading of XML failed
+					}
+					
+					# retry : Create XML Reader and load the XML data
+					# Some XML file cause a DTD Exception. We need a XmlReaderSettings helper class to fix this.
+					# 'For security reasons DTD is prohibited in this XML document. To enable DTD processing set the DtdProcessing property on XmlReaderSettings to Parse and pass the settings into XmlReader.Create method.'
+					If ($null -eq $Reader) {
+						[System.Xml.XmlReaderSettings]$xmlSettings = [System.Xml.XmlReaderSettings]::new()
+						$xmlSettings.DtdProcessing = [System.Xml.DtdProcessing]::Ignore
+						#$xmlSettings.ValidationType = [System.Xml.ValidationType]::DTD
+						$xmlSettings.MaxCharactersFromEntities = 1024
+					
+						$opfXmlReader = [System.Xml.XmlReader]::Create($opfRawDataStream.BaseStream, $xmlSettings)
+						$opfData = New-Object System.Xml.XmlDocument
+						$opfData.Load($Reader)
+					}
 
                     # most opf files have an xml attribute called #text
                     # not all epub files support this structure. So we need to check the base type.
@@ -585,7 +685,7 @@ Function Get-EpubMetaDetails
                     #$isbn = $($opfXmlData.package.metadata.identifier).'#text'
                     #publisher = $($opfXmlData.package.metadata.publisher).'#text'
 
-            
+
                     # What we do here below, is a very fast approach of parsing the XML data.
                     # I don't want to read a whole book in XML parsing in .NET, before coding this in Powershell.
                     # I just want a few data fields as fast as possible in string readable format. We use datatype checking and convert if possible.
@@ -604,14 +704,14 @@ Function Get-EpubMetaDetails
                     [System.Object]$subtitle = [string]::Empty
                     Switch($epubTitleData.Length) {
                         1 { $title = $epubTitleData[$epubTitleData.Length -1] }
-                        2 { $title = $epubTitleData[$epubTitleData.Length -2]; $subtitle = $epubTitleData[$epubTitleData.Length -1] }  
+                        2 { $title = $epubTitleData[$epubTitleData.Length -2]; $subtitle = $epubTitleData[$epubTitleData.Length -1] }
                     }
 
                     [System.Object]$creator = $epubCreatorData[$epubCreatorData.Length -1]
                     [System.Object]$isbn = $epubISBNData[$epubISBNData.Length -1]
                     [System.Object]$publisher = $epubPublisherData[$epubPublisherData.Length -1]
                     [System.Object]$date = $epubDateData[$epubDateData.Length -1]
-            
+
                     # override if the type is NOT string
                     If ($title -Is [System.Xml.XmlElement]) {
                         $title = ($title).InnerText
@@ -637,7 +737,7 @@ Function Get-EpubMetaDetails
                     If ($date -Is [System.Xml.XmlElement]) {
                         $date = ($date).InnerText
                     }
-            
+
                     # ISBN is sometimes something like "urn:isbn:xxx-x-xxxx-xxxx-x"
                     # We split the string value, and again, fetch the last part of the chunck.
                     If ($isbn -Is [String]) {
@@ -766,6 +866,8 @@ Function Main
 
                     # first, convert PNG files to JPG. This makes helps to make the epub file smaller.
                     # we do this on the original uncompressed epub data
+                    Write-Host ""
+                    Write-Host ">> Converting PNG files..."
                     #$convertedPNGFiles = Convert-PNGtoJPGFormat -FolderToSearch $(Split-Path -Path $epubOSInfo.FullName -Parent)
                     $convertedPNGFiles = Convert-PNGtoJPGFormat -FolderToSearch "$($epubOSInfo.Directory)\$($epubOSInfo.BaseName)"
 
@@ -785,7 +887,8 @@ Function Main
                         # rename filename .png to .jpg inside the new epub archive
                         If ($convertedPNGFiles.Length -gt 0) {
                             ForEach($convertedPNGFile In $convertedPNGFiles) {
-                                Rename-FileInEpubFile -EpubFileInfo $epubCloneOSInfo -SearchFile $(Split-Path -Path $convertedPNGFile.FullName -Leaf) -ReplaceFile $((Split-Path -Path $convertedPNGFile.FullName -Leaf).Replace(".png", ".jpg"))
+                                Delete-FileInEpubFile -EpubFileInfo $epubCloneOSInfo -DeleteFile "$(Split-Path -Path $convertedPNGFile.FullName -Leaf)"
+                                #Rename-FileInEpubFile -EpubFileInfo $epubCloneOSInfo -SearchFile $(Split-Path -Path $convertedPNGFile.FullName -Leaf) -ReplaceFile $((Split-Path -Path $convertedPNGFile.FullName -Leaf).Replace(".png", ".jpg"))
                                 #Replace-FileInEpubFile -EpubFileInfo $epubCloneOSInfo -ReplacementFile $((Split-Path -Path $convertedPNGFile.FullName -Leaf).Replace(".png", ".jpg"))
                             }
                         }
@@ -797,7 +900,7 @@ Function Main
 
                     # repackage (DEPRICATED)
                     #Pack-FilesToEpub -EpubFileInfo $epubOSInfo
-                    
+
                     # re-calc hashes of files
                     [hashtable]$changedHashList = Calc-FolderHashList -TargetFolder "$($epubOSInfo.Directory)\$($epubOSInfo.BaseName)"
 
@@ -821,7 +924,7 @@ Function Main
                         #    [string]$changedFileName = $originalHashList[$r.InputObject]
                         #
                         #}
-                        
+
                         If ($r.SideIndicator -eq "=>") {
                             [string]$changedFileName = $changedHashList[$r.InputObject]
                             #Write-Host "CHANGED : $($changedFileName)"
@@ -873,7 +976,7 @@ Function Main
                     Write-Host "-- Done"
                 } Else {
                     Write-Warning "[!] No epub action needed! Size is okay."
-                } 
+                }
             } Else {
                 Write-Warning "[!] Not a epub file?"
             }
@@ -896,14 +999,7 @@ Function Main
 }
 #endregion
 
-
-
-
 # --------------------
-
-
-
 
 # call main in C-style
 Main -Arguments $args
-
