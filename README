@@ -23,7 +23,9 @@ Version History:
              Lowered the default size for epub archive files from 100Mb to 98Mb.
 17/11/2021 : Created version that can handle .png files (converts files to .jpg format).
 20/11/2021 : Small improvements
-             Cleanup temporary leftover files if script would be aborted by the user.
+             Cleanup temporary leftover files at startup, if script would be early aborted by the user.
+21/11/2021 : Discovered a bug in the xhtml that is not replaced in the optimized .epub archive.
+17/05/2024 : Found that some epub files OPF XML data, contained a corrupted or incorrect DTD.
 
 
 Tips & tricks:
